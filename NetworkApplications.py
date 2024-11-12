@@ -383,9 +383,10 @@ class Traceroute(ICMPPing):
             
             packetID = random.randint(1, 65535)
             
-            rtt, ttl, packetSize, seq = self.sendOnePing(self.dstAddress, packetID, _, ttl, dataLength=64)
+            timeSent = self.sendOnePing(self.dstAddress, packetID, _, dataLength=64)
             
             trReplyPacket, hopAddr, timeRecieved = self.receiveOneTraceRouteResponse()
+            
             
             if trReplyPacket is None:
                 # Nothing is received within the timeout period
@@ -393,6 +394,12 @@ class Traceroute(ICMPPing):
             
             dstPortReceived, icmpType = self.parseICMPTracerouteResponse(trReplyPacket)
             print ("dstport = ",dstPortReceived,"icmp type=", icmpType)
+            if self.dstAddress == hopAddr and icmpType == 3:
+                self.isDestinationReached = True
+                
+            if self.dstAddress == dstPortReceived:
+                rtts[dstPortReceived] = timeRecieved - timeSent
+                hop_addrs[dstPortReceived] = hopAddr
             
 
     # Send 3 UDP traceroute probes per TTL and collect responses
@@ -478,10 +485,16 @@ class Traceroute(ICMPPing):
     # TODO: parse the response to the ICMP probe
     def parseICMPTracerouteResponse(self, trReplyPacket):
         # ICMP header is 8 bytes
-        icmp_header = trReplyPacket[20:28]
-        icmp_type, icmp_code, icmp_checksum, icmp_id, icmp_seq = struct.unpack('!BBHHH', icmp_header)
+        dst_port = None
+        ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[:20])
+        ip_header_len_field = (ip_header[0] & 0x0F)
+
+        ip_header_len = ip_header_len_field * 4
+        
+        icmpType, _, _, _, _  = struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8])
+        
         # Check if the ICMP type is 3 (Destination Unreachable)
-        if icmp_type == 3:
+        if icmpType == 3 or icmpType == 11:
                 # Extract the original IP header (20 bytes)
             inner_ip_header = trReplyPacket[28:48]
             inner_ip_header_len = (inner_ip_header[0] & 0x0F) * 4
@@ -491,9 +504,9 @@ class Traceroute(ICMPPing):
             inner_udp_header = trReplyPacket[inner_udp_header_start:inner_udp_header_start + 8]
 
             # Unpack the UDP header to get the destination port
-            src_port, dst_port, length, checksum = struct.unpack('!HHHH', inner_udp_header)
+            _, dst_port, _, _ = struct.unpack('!HHHH', inner_udp_header)
         
-        return dst_port, icmp_type
+        return dst_port, icmpType
 
     def receiveOneTraceRouteResponse(self):
 
