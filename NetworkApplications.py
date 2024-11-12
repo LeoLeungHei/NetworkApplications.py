@@ -490,17 +490,18 @@ class Traceroute(ICMPPing):
         ip_header_len_field = (ip_header[0] & 0x0F)
 
         ip_header_len = ip_header_len_field * 4
-        
+        icmp_header = trReplyPacket[ip_header_len:ip_header_len + 8]
         icmpType, _, _, _, _  = struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8])
         
         # Check if the ICMP type is 3 (Destination Unreachable)
         if icmpType == 3 or icmpType == 11:
-                # Extract the original IP header (20 bytes)
-            inner_ip_header = trReplyPacket[28:48]
+            # Extract the original IP header (20 bytes)
+            inner_ip_header_start = ip_header_len + 8
+            inner_ip_header = trReplyPacket[inner_ip_header_start:inner_ip_header_start + 20]
             inner_ip_header_len = (inner_ip_header[0] & 0x0F) * 4
         
             # Extract the original UDP header (first 8 bytes of the payload)
-            inner_udp_header_start = 28 + inner_ip_header_len
+            inner_udp_header_start = inner_ip_header_start + inner_ip_header_len
             inner_udp_header = trReplyPacket[inner_udp_header_start:inner_udp_header_start + 8]
 
             # Unpack the UDP header to get the destination port
