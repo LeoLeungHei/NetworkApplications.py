@@ -372,34 +372,40 @@ class Traceroute(ICMPPing):
     # TODO: send 3 ICMP traceroute probes per TTL and collect responses
     def sendIcmpProbesAndCollectResponses(self, ttl):
         
-        hopAddr = None
-        icmpType = None
+        # init data structures
         pkt_keys = []
         hop_addrs = dict()
         rtts = dict()
+
+        # Send 3 ICMP probes
+        for _ in range(3):  
+            # 1. Send ICMP ping
+            packetID = random.randint(1, 65535)  
+            timeSent = self.sendOnePing(self.dstAddress, packetID, _, ttl=ttl)
+
+            # 2. Use _ as key for tracking probe
+            pkt_keys.append(_)
+
+            # 3. Receive response
+            trReplyPacket, hopAddr, timeReceived = self.receiveOneTraceRouteResponse()
         
-        # Loop 3 times for 3 probes
-        for _ in range(3):
-            
-            packetID = random.randint(1, 65535)
-            
-            timeSent = self.sendOnePing(self.dstAddress, packetID, _, dataLength=64)
-            
-            trReplyPacket, hopAddr, timeRecieved = self.receiveOneTraceRouteResponse()
-            
-            
+            # Skip to next probe if there is no response
             if trReplyPacket is None:
-                # Nothing is received within the timeout period
                 continue
-            
-            dstPortReceived, icmpType = self.parseICMPTracerouteResponse(trReplyPacket)
-            print ("dstport = ",dstPortReceived,"icmp type=", icmpType)
-            if self.dstAddress == hopAddr and icmpType == 3:
+
+            # 4. Parse the ICMP response
+            probe_num, icmp_type, reciv_packetID = self.parseICMPTracerouteResponse(trReplyPacket)
+
+            # 5. Check if this is the final destination (type 0 indicates echo reply)
+            if self.dstAddress == hopAddr and icmp_type == 0:
                 self.isDestinationReached = True
-                
-            if self.dstAddress == dstPortReceived:
-                rtts[dstPortReceived] = timeRecieved - timeSent
-                hop_addrs[dstPortReceived] = hopAddr
+
+            # 6. Log the RTT and hop address if there is a response to trReplyPacket
+            rtts[_] = timeReceived - timeSent
+            hop_addrs[_] = hopAddr
+
+        # 7. Print results
+        self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
             
 
     # Send 3 UDP traceroute probes per TTL and collect responses
@@ -479,35 +485,52 @@ class Traceroute(ICMPPing):
             
             # Extract the destination port and match using source port (UDP)
             _, dst_port, _, _ = struct.unpack('!HHHH', trReplyPacket[ip_header_len + 8 + ip_header_inner_len : ip_header_len + 8 + ip_header_inner_len + 8])
+        print("icmptype= ",icmpType,"dst_port= ",dst_port)
 
         return dst_port, icmpType
     
     # TODO: parse the response to the ICMP probe
     def parseICMPTracerouteResponse(self, trReplyPacket):
-        # ICMP header is 8 bytes
-        dst_port = None
-        ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[:20])
-        ip_header_len_field = (ip_header[0] & 0x0F)
+        try:
+            # 1. Parse outer IP header (first 20 bytes)
+            ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[:20])
 
-        ip_header_len = ip_header_len_field * 4
-        icmp_header = trReplyPacket[ip_header_len:ip_header_len + 8]
-        icmpType, _, _, _, _  = struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8])
-        
-        # Check if the ICMP type is 3 (Destination Unreachable)
-        if icmpType == 3 or icmpType == 11:
-            # Extract the original IP header (20 bytes)
-            inner_ip_header_start = ip_header_len + 8
-            inner_ip_header = trReplyPacket[inner_ip_header_start:inner_ip_header_start + 20]
-            inner_ip_header_len = (inner_ip_header[0] & 0x0F) * 4
-        
-            # Extract the original UDP header (first 8 bytes of the payload)
-            inner_udp_header_start = inner_ip_header_start + inner_ip_header_len
-            inner_udp_header = trReplyPacket[inner_udp_header_start:inner_udp_header_start + 8]
+            # Extract IP header length
+            ip_header_len_field = (ip_header[0] & 0x0F)
+            ip_header_len = ip_header_len_field * 4
 
-            # Unpack the UDP header to get the destination port
-            _, dst_port, _, _ = struct.unpack('!HHHH', inner_udp_header)
-        
-        return dst_port, icmpType
+            # Debug: Validate IP header length
+            if ip_header_len < 20:  # Minimum IP header size
+                print("Error: IP header length is too small.")
+                return None, None, None
+
+            # 2. Parse the ICMP header
+            icmp_header_start = ip_header_len
+            icmp_header = struct.unpack("!BBHHH", trReplyPacket[icmp_header_start:icmp_header_start + 8])
+            icmp_type, code, checksum, packetID, probe_num = icmp_header
+
+            if icmp_type == 11:
+                embedded_ip_start = ip_header_len + 8
+                embedded_ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[embedded_ip_start:embedded_ip_start + 20])
+
+                # Extract the length of the embedded IP header
+                embedded_ip_header_len = (embedded_ip_header[0] & 0x0F) * 4
+
+                # 4. Parse the embedded ICMP header (contained within the embedded IP payload)
+                embedded_icmp_start = embedded_ip_start + embedded_ip_header_len
+                embedded_icmp_header = struct.unpack("!BBHHH", trReplyPacket[embedded_icmp_start:embedded_icmp_start + 8])
+
+                # Extract sequence number and packet ID from the embedded ICMP header
+                _, _, _, packetID, probe_num = embedded_icmp_header
+            # Debug: Print parsed ICMP header fields
+            print(f"ICMP Type: {icmp_type}, Code: {code}, Packet ID: {packetID}, Probe Num: {probe_num}")
+
+            # Return the parsed values
+            return probe_num, icmp_type, packetID
+
+        except struct.error as e:
+            print(f"Error unpacking packet: {e}")
+            return None, None, None
 
     def receiveOneTraceRouteResponse(self):
 
@@ -555,6 +578,32 @@ class MultiThreadedTraceRoute(Traceroute):
         args.protocol = args.protocol.lower()
         self.timeout = args.timeout
         self.send_complete = threading.Event()
+        self.pkt_keys = []
+        self.probes = dict()
+
+        self.dstAddress = None
+        try:
+            self.dstAddress = socket.gethostbyname(args.hostname)
+            #socket.getaddrinfo(args.hostname, None, socket.AF_INET6)
+        except socket.gaierror:
+            print('Invalid hostname: ', args.hostname) 
+            return
+        print('%s mtraceroute to: %s (%s) ...' % (args.protocol, args.hostname, self.dstAddress))
+
+        # Initialise instance variables
+        self.isDestinationReached = False
+
+        # Create a raw socket bound to ICMP protocol
+        self.icmpSocket = None
+        try:
+            self.icmpSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        except socket.error as err:
+            traceback.print_exception(err)
+            exit(1)
+
+        # Set a timeout on the socket
+        self.icmpSocket.settimeout(args.timeout)
+        
         # NOTE you must use a lock when accessing data shared between the two threads
         self.lock = threading.Lock()  
 
@@ -571,47 +620,136 @@ class MultiThreadedTraceRoute(Traceroute):
         # 5. Wait until both threads are finished executing
         self.send_thread.join()
         self.recv_thread.join()
-
+        self.icmpSocket.close()
         # 6. TODO Print results
+        
             
     # Thread to send probes (to be implemented, a skeleton is provided)
     def send_probes(self):
 
         ttl = 1
         while ttl <= MAX_TTL:
+            
+            if self.send_complete.is_set():
+                print("Stopping sending thread")
+                break
+            
+            numBytes = 52
+            dstPort = 33439
+            
             # Send three probes per TTL
-            for _ in range(3):  
+            for probe_num in range(3):  
                 if args.protocol == "icmp":
-                    pass # TODO: Remove this once this method is implemented       
+                          
+                    packetID = random.randint(1, 65535)
+                    
+                    timeSent = self.sendOnePing(self.dstAddress, packetID, probe_num, ttl=ttl)
+                    
+                    with self.lock:
+                        self.probes[(packetID, probe_num)] = timeSent, ttl
                     
                 elif args.protocol == "udp":
-                    pass # TODO: Remove this once this method is implemented       
+                    dstPort += 1
+                    timeSent = self.sendOneUdpProbe(self.dstAddress, dstPort , ttl, numBytes)       
+                    with self.lock:
+                        self.probes[dstPort] = timeSent, ttl
 
                 # Sleep for a short period between sending probes
                 time.sleep(0.05)  # Small delay between probes
-
+                
+            print("ttl =", ttl)
             ttl += 1
 
         # A final sleep before notifying the receive thread to exit
         time.sleep(args.timeout)
         # Notify the other thread that sending is complete
-        self.send_complete.set()
-        
-        pass # TODO: Remove this once this method is implemented       
+        self.send_complete.set()    
 
     # Thread to receive responses (to be implemented, a skeleton is provided)
     def receive_responses(self):
 
+        counter = 0
+        rtts = dict()  
+        hop_addrs = dict()
+        pkt_keys = []
+        seq_counter = 0
         # Keep receiving responses until notified by the other thread
         while not self.send_complete.is_set():
 
             if args.protocol == "icmp":
-                pass # TODO: Remove this once this method is implemented       
+                      
+                try:
+                    trReplyPacket, hopAddr, timeReceived = self.receiveOneTraceRouteResponse()
+                    
+                    if trReplyPacket is None:
+                        continue
+                    
+                    # Lock to access shared resources safely
+                    with self.lock:
+                        
+                        probe_num, icmp_type, packetID = self.parseICMPTracerouteResponse(trReplyPacket)
+                        for (sent_packetID, _), timeSent in self.probes.items():
+                            if packetID == sent_packetID:
+                                
+                                pkt_keys.append(probe_num)
+                                
+                                ttl = self.probes[(sent_packetID, probe_num)][1]
+                                timeSent = self.probes[(sent_packetID, probe_num)][0]
+                                
+                                rtts[probe_num] = timeReceived - timeSent
+                                hop_addrs[probe_num] = hopAddr
+                                seq_counter += 1
+                            
+                            if seq_counter == 3:
+                                self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
+                                rtts = dict()  
+                                hop_addrs = dict()
+                                pkt_keys = []
+                                seq_counter = 0
+                                
 
+                        if hopAddr == self.dstAddress and icmp_type == 0:
+                            counter += 1
+                        if counter == 3:
+                            self.isDestinationReached = True
+                            self.send_complete.set()
+                        
+                except socket.timeout:
+                    continue
+                
             elif args.protocol == "udp":
-                pass # TODO: Remove this once this method is implemented       
+                
+                trReplyPacket, hopAddr, timeRecievd = self.receiveOneTraceRouteResponse()
+                if trReplyPacket is None:
+                    # Nothing is received within the timeout period
+                    continue
+            
+                with self.lock:  
+                    dstPortReceived, icmp_type = self.parseUDPTracerouteResponse(trReplyPacket)
+                    pkt_keys.append(dstPortReceived)
+                    for (dstPort), timeSent in self.probes.items():
+                        if dstPortReceived == dstPort:
+                            ttl = self.probes[dstPortReceived][1]
+                            timeSent = self.probes[dstPortReceived][0]
+                            rtts[dstPortReceived] = timeRecievd - timeSent
+                            hop_addrs[dstPort] = hopAddr
+                            seq_counter += 1
+                            
+                        if seq_counter == 3:
+                            self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
+                            rtts = dict()  
+                            hop_addrs = dict()
+                            pkt_keys = []
+                            seq_counter = 0
+                            
+                    if icmp_type == 3 and hopAddr == self.dstAddress:
+                        counter += 1
+                        print("counter =",counter)
+                    if counter == 3:
+                        self.isDestinationReached = True
+                        self.send_complete.set()
+    
 
-        pass # TODO: Remove this once this method is implemented       
 
 
 
