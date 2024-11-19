@@ -396,15 +396,14 @@ class Traceroute(ICMPPing):
             # 4. Parse the ICMP response
             probe_num, icmp_type, reciv_packetID = self.parseICMPTracerouteResponse(trReplyPacket)
 
-            # 5. Check if this is the final destination (type 0 indicates echo reply)
+            # 5. Check if this is the final dest
             if self.dstAddress == hopAddr and icmp_type == 0:
                 self.isDestinationReached = True
 
-            # 6. Log the RTT and hop address if there is a response to trReplyPacket
+            # 6. Log the RTT and hop address
             rtts[_] = timeReceived - timeSent
             hop_addrs[_] = hopAddr
 
-        # 7. Print results
         self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
             
 
@@ -485,30 +484,30 @@ class Traceroute(ICMPPing):
             
             # Extract the destination port and match using source port (UDP)
             _, dst_port, _, _ = struct.unpack('!HHHH', trReplyPacket[ip_header_len + 8 + ip_header_inner_len : ip_header_len + 8 + ip_header_inner_len + 8])
-        print("icmptype= ",icmpType,"dst_port= ",dst_port)
 
         return dst_port, icmpType
     
     # TODO: parse the response to the ICMP probe
     def parseICMPTracerouteResponse(self, trReplyPacket):
         try:
-            # 1. Parse outer IP header (first 20 bytes)
+            # Parse outer IP header (first 20 bytes)
             ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[:20])
 
-            # Extract IP header length
+            # Extract IP header len
             ip_header_len_field = (ip_header[0] & 0x0F)
             ip_header_len = ip_header_len_field * 4
-
-            # Debug: Validate IP header length
-            if ip_header_len < 20:  # Minimum IP header size
+            
+            # check for minimum IP header size
+            if ip_header_len < 20:
                 print("Error: IP header length is too small.")
                 return None, None, None
 
-            # 2. Parse the ICMP header
+            # Parse the ICMP header
             icmp_header_start = ip_header_len
             icmp_header = struct.unpack("!BBHHH", trReplyPacket[icmp_header_start:icmp_header_start + 8])
-            icmp_type, code, checksum, packetID, probe_num = icmp_header
+            icmp_type, _, _, packetID, probe_num = icmp_header
 
+            # check for type 11 for embedded IP header
             if icmp_type == 11:
                 embedded_ip_start = ip_header_len + 8
                 embedded_ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[embedded_ip_start:embedded_ip_start + 20])
@@ -516,20 +515,18 @@ class Traceroute(ICMPPing):
                 # Extract the length of the embedded IP header
                 embedded_ip_header_len = (embedded_ip_header[0] & 0x0F) * 4
 
-                # 4. Parse the embedded ICMP header (contained within the embedded IP payload)
+                # Parse embedded ICMP header
                 embedded_icmp_start = embedded_ip_start + embedded_ip_header_len
                 embedded_icmp_header = struct.unpack("!BBHHH", trReplyPacket[embedded_icmp_start:embedded_icmp_start + 8])
 
-                # Extract sequence number and packet ID from the embedded ICMP header
+                # Extract probe number and packet ID from the embedded ICMP header
                 _, _, _, packetID, probe_num = embedded_icmp_header
-            # Debug: Print parsed ICMP header fields
-            print(f"ICMP Type: {icmp_type}, Code: {code}, Packet ID: {packetID}, Probe Num: {probe_num}")
 
             # Return the parsed values
             return probe_num, icmp_type, packetID
 
-        except struct.error as e:
-            print(f"Error unpacking packet: {e}")
+        except struct.error as error:
+            print(f"Error unpacking packet: {error}")
             return None, None, None
 
     def receiveOneTraceRouteResponse(self):
@@ -621,7 +618,6 @@ class MultiThreadedTraceRoute(Traceroute):
         self.send_thread.join()
         self.recv_thread.join()
         self.icmpSocket.close()
-        # 6. TODO Print results
         
             
     # Thread to send probes (to be implemented, a skeleton is provided)
@@ -631,7 +627,6 @@ class MultiThreadedTraceRoute(Traceroute):
         while ttl <= MAX_TTL:
             
             if self.send_complete.is_set():
-                print("Stopping sending thread")
                 break
             
             numBytes = 52
@@ -681,6 +676,7 @@ class MultiThreadedTraceRoute(Traceroute):
                 try:
                     trReplyPacket, hopAddr, timeReceived = self.receiveOneTraceRouteResponse()
                     
+                    # Check if response is received
                     if trReplyPacket is None:
                         continue
                     
@@ -688,9 +684,11 @@ class MultiThreadedTraceRoute(Traceroute):
                     with self.lock:
                         
                         probe_num, icmp_type, packetID = self.parseICMPTracerouteResponse(trReplyPacket)
+                        # Check if probe response matches the sent probe to calculate RTT
                         for (sent_packetID, _), timeSent in self.probes.items():
                             if packetID == sent_packetID:
                                 
+                                # Record probe key, calculate RTT, log hop address
                                 pkt_keys.append(probe_num)
                                 
                                 ttl = self.probes[(sent_packetID, probe_num)][1]
@@ -698,20 +696,24 @@ class MultiThreadedTraceRoute(Traceroute):
                                 
                                 rtts[probe_num] = timeReceived - timeSent
                                 hop_addrs[probe_num] = hopAddr
+                                #increment sequence counter
                                 seq_counter += 1
                             
                             if seq_counter == 3:
+                                # Print the results for the 3 probes
                                 self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
+                                # Clear data structures for the next TTL
                                 rtts = dict()  
                                 hop_addrs = dict()
                                 pkt_keys = []
                                 seq_counter = 0
                                 
-
+                        # Check if the destination is reached for 3 probes
                         if hopAddr == self.dstAddress and icmp_type == 0:
                             counter += 1
                         if counter == 3:
                             self.isDestinationReached = True
+                            # Stop sending of probes
                             self.send_complete.set()
                         
                 except socket.timeout:
@@ -720,28 +722,37 @@ class MultiThreadedTraceRoute(Traceroute):
             elif args.protocol == "udp":
                 
                 trReplyPacket, hopAddr, timeRecievd = self.receiveOneTraceRouteResponse()
+                
+                # Check if response is received
                 if trReplyPacket is None:
-                    # Nothing is received within the timeout period
                     continue
             
                 with self.lock:  
                     dstPortReceived, icmp_type = self.parseUDPTracerouteResponse(trReplyPacket)
+                    # Add dst port to the list of packet keys
                     pkt_keys.append(dstPortReceived)
+                    # Check if the response matches the sent probe to calculate RTT
                     for (dstPort), timeSent in self.probes.items():
+                        
                         if dstPortReceived == dstPort:
+                            # Log ttl, hop address and calculate RTT
                             ttl = self.probes[dstPortReceived][1]
                             timeSent = self.probes[dstPortReceived][0]
                             rtts[dstPortReceived] = timeRecievd - timeSent
                             hop_addrs[dstPort] = hopAddr
+                            # increment sequence counter
                             seq_counter += 1
-                            
+                        
                         if seq_counter == 3:
+                            # Print the results for the 3 probes
                             self.printMultipleResults(ttl, pkt_keys, hop_addrs, rtts, args.hostname)
+                            # Clear data structures for the next TTL
                             rtts = dict()  
                             hop_addrs = dict()
                             pkt_keys = []
                             seq_counter = 0
                             
+                    # Check if the destination is reached for 3 probes
                     if icmp_type == 3 and hopAddr == self.dstAddress:
                         counter += 1
                         print("counter =",counter)
@@ -823,10 +834,118 @@ class Proxy(NetworkApplication):
 
     def __init__(self, args):
         print('Web Proxy starting on port: %i...' % (args.port))
+        
+        
+        # Cache dictionary: maps URLs to file paths
+        self.cache = {}
+        self.cache_directory = "./cache"
+        os.makedirs(self.cache_directory, exist_ok = True)
+        
+        # Create a TCP socket for the proxy server
+        serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        # Bind the socket to the given port
+        serverSocket.bind(("", args.port))
+        
+        # Start listening for incoming connections
+        serverSocket.listen(100)
+        print("Proxy listening on port", args.port)
 
-        pass # TODO: Remove this once this method is implemented       
+        while True:
+            connectionSocket, addr = serverSocket.accept()
+            print(f"Connection established with {addr}")
             
+            # Create a new thread to handle the client request
+            threading.Thread(target=self.handleRequest, args=(connectionSocket,)).start()
+            
+        serverSocket.close()
 
+    def handleRequest(self, connectionSocket):
+        try:
+            
+            message = connectionSocket.recv(MAX_DATA_RECV).decode()
+            print(f"Request received: {message.splitlines()[0]}")
+
+            # Parse the HTTP request to extract the destination host and port
+            firstLine = message.splitlines()[0]
+            url = firstLine.split()[1]
+
+            http_pos = url.find("://") 
+            if http_pos != -1:
+                url = url[(http_pos + 3):]
+
+            # Extract host and port
+            host, path = url.split("/", 1)  
+            if ":" in host:
+                host, dest_port = host.split(":")
+                dest_port = int(dest_port)
+            else:
+                dest_port = 80 # Default port if no port is provided
+            
+            
+             # Check if the URL is cached
+            cache_key = f"{host}{path}"
+            if cache_key in self.cache:
+                
+                print(f"Cache found for URL: {cache_key}")
+                self.serveCachedResponse(connectionSocket, cache_key)
+                
+            elif cache_key not in self.cache:
+                
+                print(f"Cache not found for URL: {cache_key}. Fetching from server.")
+                self.CacheResponse(connectionSocket, host, dest_port, path, cache_key, message)
+
+        except Exception as error:
+            print(f"Error handling proxy request: {error}")
+            
+        finally:
+            # Close socket
+            connectionSocket.close()
+
+    def serveCachedResponse(self, connectionSocket, cache_key):
+        # Serve cached response by reading the file from ./cache
+        cache_path = self.cache[cache_key]
+        
+        try:
+            
+            with open(cache_path, 'rb') as cached_file:
+                
+                while (chunk := cached_file.read(MAX_DATA_RECV)):
+                    connectionSocket.send(chunk)
+                    
+            print(f"Served cached response for {cache_key}")
+            
+        except IOError:
+            print(f"Failed to serve cached response for {cache_key}")
+
+    def CacheResponse(self, connectionSocket, host, port, path, cache_key, message):
+        # Connect to the destination server
+        destinationSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        destinationSocket.connect((host, port))
+        destinationSocket.send(message.encode())
+
+        # Cache the response
+        cache_path = os.path.join(self.cache_directory, cache_key.replace("/", "_"))
+        
+        with open(cache_path, 'wb') as cache_file:
+            
+            while True:
+                
+                serverResponse = destinationSocket.recv(MAX_DATA_RECV)
+                
+                if len(serverResponse) == 0:
+                    break
+                
+                # Save response to cache and send it to the terminal
+                cache_file.write(serverResponse)
+                connectionSocket.send(serverResponse)
+                
+        # Update cache dictionary
+        self.cache[cache_key] = cache_path
+        print(f"Cached response for {cache_key} at {cache_path}")
+
+        destinationSocket.close()
+        
 # NOTE: Do NOT delete the code below
 if __name__ == "__main__":
         
