@@ -14,6 +14,7 @@ options:
 -h, --help
 show help message and exit
 
-e.g. python3 NetworkApplicationsFinal.py ping -p icmp google.com
+e.g. python3 NetworkApplicationsFinal.py ping google.com, python3 NetworkApplicationsFinal.py traceroute -p icmp google.com
 NOTE: Only works on computers with SUDO privileges
 NOTE 2: Traceroute and Multi-threaded Traceroute only works on Linux platforms
+NOTE 3: Webserver and proxy only works on websites without https encryption
