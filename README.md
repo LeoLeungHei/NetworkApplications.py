@@ -14,6 +14,6 @@ options:
 -h, --help
 show help message and exit
 
-e.g. python3 NetworkApplications.py traceroute -p icmp google.com
+e.g. python3 NetworkApplicationsFinal.py traceroute -p icmp google.com
 NOTE: Only works on computers with SUDO privileges
 NOTE 2: Traceroute and Multi-threaded Traceroute only works on Linux platforms
